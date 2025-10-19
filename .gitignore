@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 dist/
 db_meta.json
+data/
