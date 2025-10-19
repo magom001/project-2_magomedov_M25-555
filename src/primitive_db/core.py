@@ -1,7 +1,8 @@
 from typing import Any, Dict, List, Optional
 
+from .constants import META_FILE, VALID_TYPES
 from .decorators import confirm_action, create_cacher, handle_db_errors, log_time
-from .models import VALID_TYPES, Column, Table
+from .models import Column, Table
 from .utils import (
     delete_table_data,
     load_metadata,
@@ -39,7 +40,7 @@ class RecordNotFoundError(DatabaseError):
 class Database:
     """Основной класс базы данных для управления таблицами."""
     
-    def __init__(self, metadata_file: str = "db_meta.json"):
+    def __init__(self, metadata_file: str = META_FILE):
         """
         Инициализировать базу данных.
         

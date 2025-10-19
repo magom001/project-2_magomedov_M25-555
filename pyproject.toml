@@ -1,7 +1,7 @@
 [project]
 name = "project2_magomedov_M25-555"
 version = "0.1.0"
-description = ""
+description = "Примитивная база данных с поддержкой CRUD-операций, декораторов и кеширования"
 authors = [
     {name = "Arkady Magomedov",email = "a.magomedov@live.com"}
 ]

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-VALID_TYPES = {"int", "str", "bool"}
+from .constants import VALID_TYPES
 
 
 @dataclass
