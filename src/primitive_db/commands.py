@@ -2,7 +2,23 @@ import shlex
 from abc import ABC, abstractmethod
 from typing import Dict, List, Type
 
-from .core import Database, TableExistsError, TableNotFoundError
+from prettytable import PrettyTable
+
+from .core import (
+    Database,
+    RecordNotFoundError,
+    TableExistsError,
+    TableNotFoundError,
+    ValidationError,
+)
+from .parser import (
+    ParseError,
+    parse_delete,
+    parse_info,
+    parse_insert,
+    parse_select,
+    parse_update,
+)
 
 
 class InvalidCommandError(Exception):
@@ -159,6 +175,11 @@ class DatabaseCommandRegistry:
         self.register_command(CreateTableCommand)
         self.register_command(DropTableCommand)
         self.register_command(ListTablesCommand)
+        self.register_command(InsertCommand)
+        self.register_command(SelectCommand)
+        self.register_command(UpdateCommand)
+        self.register_command(DeleteCommand)
+        self.register_command(InfoCommand)
     
     def register_command(self, command_class: Type[DatabaseCommand]):
         """Зарегистрировать класс команды базы данных."""
@@ -204,3 +225,216 @@ class DatabaseCommandRegistry:
     def get_database_commands(self) -> List[str]:
         """Получить список имён доступных команд базы данных."""
         return list(self._commands.keys())
+
+
+class InsertCommand(DatabaseCommand):
+    """Команда для вставки записи в таблицу."""
+    
+    def __init__(self, table_name: str, values: List[str]):
+        self.table_name = table_name
+        self.values = values
+    
+    def execute(self, db: Database) -> str:
+        """Вставить запись в таблицу."""
+        try:
+            return db.insert(self.table_name, self.values)
+        except (TableNotFoundError, ValidationError) as e:
+            return str(e)
+    
+    @classmethod
+    def from_input(cls, args: List[str]) -> "InsertCommand":
+        """Разобрать команду insert from user input."""
+        # Объединить обратно в строку для парсера
+        command = " ".join(args)
+        
+        try:
+            table_name, values = parse_insert(command)
+            return cls(table_name, values)
+        except ParseError as e:
+            raise InvalidCommandError(str(e))
+    
+    @classmethod
+    def get_command_name(cls) -> str:
+        return "insert"
+
+
+class SelectCommand(DatabaseCommand):
+    """Команда для выборки записей из таблицы."""
+    
+    def __init__(
+        self,
+        table_name: str,
+        where_column: str = None,
+        where_value: str = None,
+    ):
+        self.table_name = table_name
+        self.where_column = where_column
+        self.where_value = where_value
+    
+    def execute(self, db: Database) -> str:
+        """Выбрать записи из таблицы."""
+        try:
+            records = db.select(
+                self.table_name, self.where_column, self.where_value
+            )
+            
+            if not records:
+                return f'В таблице "{self.table_name}" нет записей.'
+            
+            # Получить таблицу для определения столбцов
+            table = db.get_table(self.table_name)
+            column_names = [col.name for col in table.columns]
+            
+            # Создать PrettyTable
+            pt = PrettyTable()
+            pt.field_names = column_names
+            
+            # Добавить записи
+            for record in records:
+                row = [record.get(col, "") for col in column_names]
+                pt.add_row(row)
+            
+            return str(pt)
+        except (TableNotFoundError, ValidationError) as e:
+            return str(e)
+    
+    @classmethod
+    def from_input(cls, args: List[str]) -> "SelectCommand":
+        """Разобрать команду select from user input."""
+        # Объединить обратно в строку для парсера
+        command = " ".join(args)
+        
+        try:
+            table_name, where_column, where_value = parse_select(command)
+            return cls(table_name, where_column, where_value)
+        except ParseError as e:
+            raise InvalidCommandError(str(e))
+    
+    @classmethod
+    def get_command_name(cls) -> str:
+        return "select"
+
+
+class UpdateCommand(DatabaseCommand):
+    """Команда для обновления записей в таблице."""
+    
+    def __init__(
+        self,
+        table_name: str,
+        set_column: str,
+        set_value: str,
+        where_column: str,
+        where_value: str,
+    ):
+        self.table_name = table_name
+        self.set_column = set_column
+        self.set_value = set_value
+        self.where_column = where_column
+        self.where_value = where_value
+    
+    def execute(self, db: Database) -> str:
+        """Обновить записи в таблице."""
+        try:
+            return db.update(
+                self.table_name,
+                self.set_column,
+                self.set_value,
+                self.where_column,
+                self.where_value,
+            )
+        except (
+            TableNotFoundError,
+            ValidationError,
+            RecordNotFoundError,
+        ) as e:
+            return str(e)
+    
+    @classmethod
+    def from_input(cls, args: List[str]) -> "UpdateCommand":
+        """Разобрать команду update from user input."""
+        # Объединить обратно в строку для парсера
+        command = " ".join(args)
+        
+        try:
+            (
+                table_name,
+                set_column,
+                set_value,
+                where_column,
+                where_value,
+            ) = parse_update(command)
+            return cls(
+                table_name, set_column, set_value, where_column, where_value
+            )
+        except ParseError as e:
+            raise InvalidCommandError(str(e))
+    
+    @classmethod
+    def get_command_name(cls) -> str:
+        return "update"
+
+
+class DeleteCommand(DatabaseCommand):
+    """Команда для удаления записей из таблицы."""
+    
+    def __init__(self, table_name: str, where_column: str, where_value: str):
+        self.table_name = table_name
+        self.where_column = where_column
+        self.where_value = where_value
+    
+    def execute(self, db: Database) -> str:
+        """Удалить записи из таблицы."""
+        try:
+            return db.delete(self.table_name, self.where_column, self.where_value)
+        except (
+            TableNotFoundError,
+            ValidationError,
+            RecordNotFoundError,
+        ) as e:
+            return str(e)
+    
+    @classmethod
+    def from_input(cls, args: List[str]) -> "DeleteCommand":
+        """Разобрать команду delete from user input."""
+        # Объединить обратно в строку для парсера
+        command = " ".join(args)
+        
+        try:
+            table_name, where_column, where_value = parse_delete(command)
+            return cls(table_name, where_column, where_value)
+        except ParseError as e:
+            raise InvalidCommandError(str(e))
+    
+    @classmethod
+    def get_command_name(cls) -> str:
+        return "delete"
+
+
+class InfoCommand(DatabaseCommand):
+    """Команда для получения информации о таблице."""
+    
+    def __init__(self, table_name: str):
+        self.table_name = table_name
+    
+    def execute(self, db: Database) -> str:
+        """Получить информацию о таблице."""
+        try:
+            return db.get_table_info(self.table_name)
+        except TableNotFoundError as e:
+            return str(e)
+    
+    @classmethod
+    def from_input(cls, args: List[str]) -> "InfoCommand":
+        """Разобрать команду info from user input."""
+        # Объединить обратно в строку для парсера
+        command = " ".join(args)
+        
+        try:
+            table_name = parse_info(command)
+            return cls(table_name)
+        except ParseError as e:
+            raise InvalidCommandError(str(e))
+    
+    @classmethod
+    def get_command_name(cls) -> str:
+        return "info"
