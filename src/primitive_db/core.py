@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional
 
+from .decorators import confirm_action, create_cacher, handle_db_errors, log_time
 from .models import VALID_TYPES, Column, Table
 from .utils import (
     delete_table_data,
@@ -48,6 +49,8 @@ class Database:
         self.metadata_file = metadata_file
         self.tables: Dict[str, Table] = {}
         self.load_tables()
+        # Создаем функцию кеширования для select-запросов
+        self._cache_select = create_cacher()
     
     def load_tables(self) -> None:
         """Загрузить таблицы из файла метаданных."""
@@ -65,6 +68,12 @@ class Database:
         
         save_metadata(self.metadata_file, metadata)
     
+    def _clear_select_cache(self) -> None:
+        """Очистить кеш select-запросов при изменении данных."""
+        # Создаем новую функцию кеширования, чтобы очистить старый кеш
+        self._cache_select = create_cacher()
+    
+    @handle_db_errors
     def create_table(self, table_name: str, column_specs: List[str]) -> str:
         """
         Создать новую таблицу.
@@ -115,6 +124,8 @@ class Database:
 
         return f'Таблица "{table_name}" успешно создана со столбцами: {columns_str}'
     
+    @handle_db_errors
+    @confirm_action("удаление таблицы")
     def drop_table(self, table_name: str) -> str:
         """
         Удалить существующую таблицу.
@@ -142,6 +153,7 @@ class Database:
         
         return f'Таблица "{table_name}" успешно удалена.'
     
+    @handle_db_errors
     def list_tables(self) -> str:
         """
         Показать список всех существующих таблиц.
@@ -217,6 +229,8 @@ class Database:
                 f"Не удалось преобразовать '{value}' в тип {expected_type}: {e}"
             )
     
+    @handle_db_errors
+    @log_time
     def insert(self, table_name: str, values: List[str]) -> str:
         """
         Вставить новую запись в таблицу.
@@ -267,8 +281,13 @@ class Database:
         # Сохранить данные
         save_table_data(table_name, table_data)
         
+        # Очистить кеш select-запросов
+        self._clear_select_cache()
+        
         return f'Запись с ID={new_id} успешно добавлена в таблицу "{table_name}".'
     
+    @handle_db_errors
+    @log_time
     def select(
         self,
         table_name: str,
@@ -289,34 +308,43 @@ class Database:
         Raises:
             TableNotFoundError: Если таблица не существует
         """
-        # Проверить существование таблицы
-        table = self.get_table(table_name)
+        # Создаем уникальный ключ для кеширования на основе параметров запроса
+        cache_key = f"{table_name}:{where_column}:{where_value}"
         
-        # Загрузить данные таблицы
-        table_data = load_table_data(table_name)
+        # Функция для выполнения запроса
+        def _execute_select() -> List[Dict[str, Any]]:
+            # Проверить существование таблицы
+            table = self.get_table(table_name)
+            
+            # Загрузить данные таблицы
+            table_data = load_table_data(table_name)
+            
+            # Если нет условия where, вернуть все записи
+            if where_column is None or where_value is None:
+                return table_data
+            
+            # Проверить что столбец существует
+            try:
+                column = table.get_column(where_column)
+            except ValueError:
+                raise ValidationError(f"Столбец '{where_column}' не найден в таблице")
+            
+            # Преобразовать значение where в нужный тип
+            typed_value = self._validate_value(where_value, column.type)
+            
+            # Фильтровать записи
+            filtered = [
+                record
+                for record in table_data
+                if record.get(where_column) == typed_value
+            ]
+            
+            return filtered
         
-        # Если нет условия where, вернуть все записи
-        if where_column is None or where_value is None:
-            return table_data
-        
-        # Проверить что столбец существует
-        try:
-            column = table.get_column(where_column)
-        except ValueError:
-            raise ValidationError(f"Столбец '{where_column}' не найден в таблице")
-        
-        # Преобразовать значение where в нужный тип
-        typed_value = self._validate_value(where_value, column.type)
-        
-        # Фильтровать записи
-        filtered = [
-            record
-            for record in table_data
-            if record.get(where_column) == typed_value
-        ]
-        
-        return filtered
+        # Использовать кеширование
+        return self._cache_select(cache_key, _execute_select)
     
+    @handle_db_errors
     def update(
         self,
         table_name: str,
@@ -378,6 +406,9 @@ class Database:
         # Сохранить данные
         save_table_data(table_name, table_data)
         
+        # Очистить кеш select-запросов
+        self._clear_select_cache()
+        
         ids_str = ", ".join([f"ID={id}" for id in updated_ids])
         if updated_count == 1:
             return f'Запись с {ids_str} в таблице "{table_name}" успешно обновлена.'
@@ -387,6 +418,8 @@ class Database:
                 f'успешно обновлены.'
             )
     
+    @handle_db_errors
+    @confirm_action("удаление записей")
     def delete(
         self, table_name: str, where_column: str, where_value: str
     ) -> str:
@@ -445,6 +478,9 @@ class Database:
         # Сохранить данные
         save_table_data(table_name, table_data)
         
+        # Очистить кеш select-запросов
+        self._clear_select_cache()
+        
         ids_str = ", ".join([f"ID={id}" for id in deleted_ids])
         if len(deleted_ids) == 1:
             return f'Запись с {ids_str} успешно удалена из таблицы "{table_name}".'
@@ -454,6 +490,7 @@ class Database:
                 f'из таблицы "{table_name}".'
             )
     
+    @handle_db_errors
     def get_table_info(self, table_name: str) -> str:
         """
         Получить информацию о таблице.
